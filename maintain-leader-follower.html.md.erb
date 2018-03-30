@@ -445,3 +445,28 @@ If you still have access to the former leader VM, perform these steps to clean u
       --instance=mysql/ca0ed8b5-7590-4cde-bba8-7ca2935f2bd0</pre>
    Replication and high availability are resumed. The deployment should be in its original, working state. You may turn resurrection back on if desired.
 
+#### <a id='synchronous-replication'></a>Enable synchronous replication
+In a leader follower configuration, we support synchronous replication in addition to the default asynchronous replication. In synchronous replication, data does not get committed to the leader node, until the follower acknowledges the same commit and can replicate it. This guarantees that if the leader is lost that a redundant copy of the data exists on the follower - this is not guaranteed by asynchronous replication. This has a data integrity advantage over asynchronous replication, but reduces the performance of write operations (depending on latency).
+
+You can read more about this functionality on the [mysql documentation page](https://dev.mysql.com/doc/refman/5.7/en/replication-semisync.html).
+
+To enable on your service instance, toggle the service flag `replication_mode`:
+<pre class="terminal">
+$ cf update-service my-lf-instance -c '{"replication_mode": "semi-sync"}'
+</pre>
+
+To return to default asynchronous replication, toggle the service flag `replication_mode` as follows:
+<pre class="terminal">
+$ cf update-service my-lf-instance -c '{"replication_mode": "async"}'
+</pre>
+
+MySQL synchronous replication will fallback to asynchronous if a follower has not acknowledged a replicated operation within some time.  On service instance with synchronous replication enabled, the amount of time that a leader node with wait for the follower to acknowledge a commit is set to a high timeout - 2<sup>63</sup> milliseconds (approximately 292 million years). This is done so the default behavior synchronous replication is not to fallback to asynchronous. This timeout can be manually overridden to a lower value in milliseconds with the following command:
+
+<pre class="terminal">
+$ cf update-service my-lf-instance -c '{"semi_sync_ack_timeout_in_ms": 5000}'
+</pre>
+
+<p class="note"><strong>Note</strong>:
+When the replication mode timeout is reached, the replication_mode with automatically revert back to 'async' without any user intervention.
+</p>
+
