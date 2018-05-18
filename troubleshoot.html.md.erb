@@ -1,0 +1,490 @@
+---
+title: Troubleshooting MySQL for PCF
+owner: MySQL
+---
+
+In this topic:
+
+* [Troubleshooting Errors](#errors)
+    * [Failed Install](#install-fail)
+    * [Cannot Create or Delete Service Instances](#cannot-create-delete)
+    * [Broker Request Timeouts](#timeouts)
+    * [Cannot Bind to or Unbind from Service Instances](#cannot-bind)
+    * [Cannot Connect to a Service Instance](#cannot-connect)
+    * [Upgrade All Instances Fails](#upgrade-all-fails)
+    * [Missing Logs and Metrics](#missing-logs)
+    * [Unable to Determine Leader and Follower (Errand Error)](#unable-to-determine)
+    * [Both Leader and Follower Instances Are Writable (Errand Error)](#both-writable)
+    * [Both Leader and Follower Instances Are Read-Only](#both-read-only)
+* [Troubleshooting Components](#components)
+    * [BOSH Problems](#bosh)
+    * [Configuration](#bosh-config)
+    * [Authentication](#auth)
+    * [Networking](#network)
+    * [Quotas](#quotas)
+    * [Failing Jobs and Unhealthy Instances](#failing-jobs)
+    * [AZ or Region Failure](#az-region-fail)
+* [Techniques for Troubleshooting](#techniques)
+    * [Parse a Cloud Foundry (CF) Error Message](#parse-error)
+    * [Access Broker and Instance Logs and VMs](#bosh-cf-access)
+    * [Run Service Broker Errands to Manage Brokers and Instances](#broker-errands)
+    * [Detect Orphaned Instances Service Instances](#detect-orphans)
+    * [Retrieve Admin and Read-Only Admin Credentials for a Service Instance](#instance-creds)
+    * [Reinstall a Tile](#reinstall)
+    * [View Resource Saturation and Scaling](#view-resources)
+    * [Identify Service Instance Owner](#id-instance-owner)
+    * [Monitor Quota Saturation and Service Instance Count](#monitor-quota)
+* [Knowledge Base (Community)](#kb)
+* [File a Support Ticket](#support)
+<br><br>
+
+This topic provides operators with basic instructions for troubleshooting on-demand MySQL for PCF.
+
+For information on temporary MySQL for PCF service interruptions, see <a href="./upgrade.html#interruptions">Service Interruptions</a>.
+
+<a id="errors"></a><h2>Troubleshooting Errors</h2>
+
+This section provides information on how to troubleshooting specific errors or error messages. 
+
+<a id="install-fail"></a><h3>Failed Install</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-install-fail' %>
+
+<a id="cannot-create-delete"></a><h3>Cannot Create or Delete Service Instances</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-cannot-create-delete' %>
+
+<a id="timeouts"></a><h3>Broker Request Timeouts</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-timeouts' %>
+
+<a id="cannot-bind"></a><h3>Cannot Bind to or Unbind from Service Instances</h3>
+
+<a id="instance-not-exist"></a><h4>Instance Does Not Exist</h4>
+
+<%= partial '../../mysql/odb/tshoot-err-instance-not-exist' %>
+
+<a id="other-errors"></a><h4>Other Errors</h4>
+
+<%= partial '../../mysql/odb/tshoot-err-other-errors' %>
+
+<a id="cannot-connect"></a><h3>Cannot Connect to a Service Instance</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-cannot-connect' %>
+
+Service instances can also become temporarily inaccessible during upgrades and VM or network failures. See <a href="./upgrade.html#interruptions">Service Interruptions</a> for more information.
+
+<a id="upgrade-all-fails"></a><h3>Upgrade All Instances Fails</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-upgrade-all-fails' %>
+
+<a id="missing-logs"></a><h3>Missing Logs and Metrics</h3>
+
+<%= partial '../../mysql/odb/tshoot-err-missing-logs' %>
+
+<a id="unable-to-determine"></a><h3>Unable to Determine Leader and Follower (Errand Error)</h3>
+
+This problem happens when the <code>configure-leader-follower</code> errand fails because it cannot determine the VM roles.
+
+<h4>Symptom</h4>
+The <code>configure-leader-follower</code> errand exits with <code>1</code> and the errand logs contain the following:
+
+<pre class="terminal">$ Unable to determine leader and follower based on transaction history.</pre>
+
+<h4>Explanation</h4>
+Something has happened to the instances, such as a failure or manual intervention. As a result, there is not enough
+information available to determine the correct state and topology without operator intervention to resolve the issue.
+
+<h4>Solution</h4>
+
+Use the <code>inspect</code> errand to determine which instance should be the leader. Then, using the <a href="./about-leader-follower.html#errands">orchestration</a> errands and backup/restore, you can
+put the service instance into a safe topology, and then rerun the <code>configure-leader-follower</code> errand. This is shown in the example below.
+
+This example shows one outcome that the <code>inspect</code> errand can return: 
+
+<ol>
+<li>Use the <code>inspect</code> errand to retrieve relevant information about the two VMs:
+<pre class="terminal">
+$ bosh2 -e my-env -d my-dep run-errand inspect
+[...]
+Instance   mysql/4ecad54b-0704-47eb-8eef-eb228cab9724
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>//127.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: false
+         Read Only: true
+         GTID Executed: 1d774323-de9e-11e7-be01-42010a001014:1-25
+         Replication Configured: false<br /><br />
+Instance   mysql/e0b94ade-0114-4d49-a929-ce1616d8beda
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>//127.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: true
+         Read Only: true
+         GTID Executed: 1d774323-de9e-11e7-be01-42010a001014:1-25
+         Replication Configured: true<br /><br />
+2 errand(s)<br />
+Succeeded
+</pre>
+In the above scenario, the first instance is missing data but does not have replication configured. The second instance
+has data, and also has replication configured. The instructions below resolve this by copying data to the first instance,
+and resuming replication.</li>
+<li>Take a backup of the first instance using the <a href="backup-and-restore.html#manual-backup">Manual Backup</a> steps.</li>
+<li>Restore the backup artifact to the first instance using the <a href="backup-and-restore.html#restore">Manual Restore</a> steps.<br><br>
+	At this point, the instances have equivalent data.</li>
+<li> Run the <code>configure-leader-follower</code> errand to reconfigure replication:
+<code> bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand configure-leader-follower --instance=mysql/INDEX-OF-LEADER </code>
+<pre class="terminal">
+$ bosh2 -e my-env -d my-dep \
+  run-errand configure-leader-follower \
+  --instance=mysql/4ecad54b-0704-47eb-8eef-eb228cab9724
+</pre></li>
+
+<h3><a id="both-writable"></a>Both Leader and Follower Instances Are Writable (Errand Error)</h3>
+
+This problem happens when the <code>configure-leader-follower</code> errand fails 
+because both VMs are writable and the VMs might hold differing data.
+
+<h4>Symptom</h4>
+
+The <code>configure–leader-follower</code> errand exits with <code>1</code> and the errand logs contain the following:<br><br>
+
+<pre class="terminal">$ Both mysql instances are writable. Please ensure no divergent data and set one instance to read-only mode.</pre>
+
+<h4>Explanation</h4>
+
+MySQL for PCF tries to ensure that there is only one writable instance of the leader-follower pair at any given time.
+However, in certain situations, such as
+network partitions, or manual intervention outside of the provided bosh errands, it is possible for both instances
+to be writable.
+
+The service instances remain in this state until an operator resolves the issue to ensure that the correct instance is
+promoted and reduce the potential for data divergence.
+
+<h4>Solution</h4>
+
+<ol>
+<li> Use the <code>inspect</code> errand to retrieve the GTID Executed set for each VM:
+<pre class="terminal">
+$ bosh2 -e my-env -d my-dep run-errand inspect
+[...]
+Instance   mysql/4ecad54b-0704-47eb-8eef-eb228cab9724
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>127.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: true
+         Read Only: false
+         GTID Executed: 1d774323-de9e-11e7-be01-42010a001014:1-23
+         Replication Configured: false<br /><br />
+Instance   mysql/e0b94ade-0114-4d49-a929-ce1616d8beda
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>127.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: true
+         Read Only: false
+         GTID Executed: 1d774323-de9e-11e7-be01-42010a001014:1-25
+         Replication Configured: false<br /><br />
+2 errand(s)<br />
+Succeeded
+</pre>
+If the GTID Executed sets for both instances are the same, continue to Step 2. If they are different, continue to Step 4.</li>
+<li>Look at the value of GTID Executed for both instances.
+    <ul><li>If the range after the GUID is equivalent, either instance can be made read-only, as described in Step 3.</li>
+    <li>If one instance has a range that is a subset of the other, the instance with the subset should be made read-only, as
+      described in Step 3.</li></ul></li>
+<li>Based on the information you gathered in the step above, run the <code>make-read-only</code> errand to make the appropriate instance read-only:
+<code> bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand make-read-only --instance=mysql/MYSQL-SUBSET-INSTANCE
+</code>
+<pre class="terminal">
+$ bosh2 -e my-env -d my-dep \
+  run-errand make-read-only \
+  --instance=mysql/e0b94ade-0114-4d49-a929-ce1616d8beda
+[...]
+Succeeded
+</pre></li>
+<li>If the GTID Executed sets are neither equivalent nor subsets, 
+   data has diverged and you must determine what data has diverged as part of the procedure below:
+   <ol>
+	<li>Use the <code>make-read-only</code> errand to set both instances to read-only to prevent further data divergence.
+    <code> bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand make-read-only --instance=mysql/MYSQL-INSTANCE </code>
+<pre class="terminal">$ bosh2 -e my-env -d my-dep \
+  run-errand make-read-only \
+  --instance=mysql/e0b94ade-0114-4d49-a929-ce1616d8beda
+[...]
+Succeeded</pre></li>
+	<li>Take a backup of both instances using the <a href="backup-and-restore.html#manual-backup">Manual Backup</a> steps.</li>
+	<li>Manually inspect the data on each instance to determine the discrepancies and put the data on the instance that is
+    further ahead---this instance has the higher GTID Executed set, and will be the new leader.</li>   
+	<li>Migrate all appropriate data to the new leader instance.</li>
+	<li>After putting all data on the leader, ssh onto the follower:
+    <code> bosh2 -e ENVIRONMENT -d DEPLOYMENT ssh mysql/INDEX-OF-FOLLOWER</code>
+<pre class="terminal">$ bosh2 -e my-env -d my-dep ssh mysql/e0b94ade-0114-4d49-a929-ce1616d8beda</pre></li>
+	<li>Become root with the command <code>sudo su</code>.<br></li>
+	<li>Stop the mysql process with the command <code>monit stop mysql</code>.</li>
+	<li>Delete the data directory of the follower with the command <code>rm -rf /var/vcap/store/mysql</code>.</li>
+	Use the <code>configure-leader-follower</code> errand to copy the leader's data to the follower and resume replication:
+    <code> bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand configure-leader-follower --instance=mysql/INDEX-OF-LEADER</code>
+<pre class="terminal">$ bosh2 -e my-env -d my-dep \
+  run-errand configure-leader-follower \
+  --instance=mysql/4ecad54b-0704-47eb-8eef-eb228cab9724</pre></li>
+</ol>
+</li>
+</ol>
+
+<h3><a id="both-read-only"></a>Both Leader and Follower Instances Are Read-Only</h3>
+
+In a leader-follower topology, the leader VM is writable and 
+the follower VM is read-only. However if both VMs are read only, apps cannot write to the database.
+
+
+<h4>Symptom</h4>
+
+Developers report that apps cannot write to the database.
+
+<h4>Explanation</h4>
+
+This problem happens if the leader VM fails and the BOSH Resurrector is enabled. 
+When the leader is resurrected, it is set as read-only.
+
+
+<h4>Solution</h4>
+
+<ol>
+    <li> Use the <code>inspect</code> errand to confirm that both VMs are in a read-only state:
+        <code>
+            bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand inspect
+        </code>
+    </li>
+    <li>Examine the output and locate the information about the leader-follower MySQL VMs:
+<pre class="terminal">
+Instance   mysql/4eexample54b-0704-47eb-8eef-eb2example724
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>999.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: true
+         Read Only: true
+         GTID Executed: 1d779999-de9e-11e7-be01-42010a009999:1-23
+         Replication Configured: true<br /><br />
+Instance   mysql/e0exampleade-0114-4d49-a929-cexample8beda
+Exit Code  0
+Stdout     -
+Stderr     2017/12/11 18:25:54 Started executing command: inspect
+         2017/12/11 18:25:54 Started GET https<span>:</span>999.0.0.1:8443/status
+         2017/12/11 18:25:54
+         Has Data: true
+         Read Only: true
+         GTID Executed: 1d779999-de9e-11e7-be01-42010a009999:1-25
+         Replication Configured: false<br /><br />
+2 errand(s)<br />
+Succeeded
+</pre>
+    </li>
+    <li>
+        If Read Only is set to <code>true</code> for both VMs, make the leader writable using the following command:
+        <code>bosh2 -e ENVIRONMENT -d DEPLOYMENT run-errand configure-leader-follower --instance=mysql/INDEX-OF-LEADER</code>
+        <br><br>For example, if the second instance above is the leader:
+<pre class="terminal">
+$ bosh2 -e my-env -d my-dep \
+  run-errand configure-leader-follower \
+  --instance=mysql/e0exampleade-0114-4d49-a929-cexample8beda
+</pre>
+    </li>
+</ol>
+
+<a id="components"></a><h2>Troubleshooting Components</h2>
+
+This section provides guidance on checking for and fixing issues in on-demand service components.
+
+<a id="bosh"></a><h3>BOSH Problems</h3>
+
+<a id="no-bosh-uuid"></a><h4>Missing BOSH Director UUID</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-no-bosh-uuid' %>
+
+<a id="large-queue"></a><h4>Large BOSH Queue</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-large-queue' %>
+
+<a id="bosh-config"></a><h3>Configuration</h3>
+
+<a id="bosh-instance-fail"></a><h4>Service instances in failing state</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-bosh-instance-fail' %>
+
+<a id="auth"></a><h3>Authentication</h3>
+
+<a id="uaa-change"></a><h4>UAA Changes</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-uaa-change' %>
+
+<a id="network"></a><h3>Networking</h3>
+
+<%= partial '../../mysql/odb/tshoot-comp-network' %>
+
+<a id="broker-to-instances"></a><h4>Validate Service Broker Connectivity to Service Instances</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-broker-to-instances' %>
+
+<a id="app-to-instances"></a><h4>Validate App Access to Service Instance</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-app-to-instances' %>
+
+<a id="quotas"></a><h3>Quotas</h3>
+
+<a id="plan-quotas"></a><h4>Plan Quota issues</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-plan-quotas' %>
+
+<a id="global-quotas"></a><h4>Global Quota Issues</h4>
+
+<%= partial '../../mysql/odb/tshoot-comp-global-quotas' %>
+
+<a id="failing-jobs"></a><h3>Failing Jobs and Unhealthy Instances</h3>
+
+<%= partial '../../mysql/odb/tshoot-comp-failing-jobs' %>
+
+A failing process or failing VM might come back automatically after a temporary service outage. 
+See <a href="./interruptions.html#process-fail">VM Process Failure</a> and 
+<a href="./interruptions.html#vm-fail">VM Failure</a>.
+
+<a id="az-region-fail"></a><h3>AZ or Region Failure</h3>
+
+Failures at the IaaS level, such as Availability Zone (AZ) or region  failures, can interrupt service and require manual restoration. See <a href="./interruptions.html#az-fail">AZ Failure</a> 
+and <a href="./interruptions.html#region-fail">Region Failure</a>.
+
+<a id="techniques"></a><h2>Techniques for Troubleshooting</h2>
+
+Instructions on interacting with the on-demand service broker and on-demand service instance BOSH deployments, and on performing general maintenance and housekeeping tasks
+
+<a id="parse-error"></a><h3>Parse a Cloud Foundry (CF) Error Message</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-parse-error' %>
+
+<a id="bosh-cf-access"></a><h3>Access Broker and Instance Logs and VMs</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-bosh-cf-access' %>
+
+<a id="access-broker"></a><h4>Access Broker Logs and VM(s)</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-access-broker' %>
+
+<a id="access-instance"></a><h4>Access Service Instance Logs and VMs</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-access-instance' %>
+
+<a id="broker-errands"></a><h3>Run Service Broker Errands to Manage Brokers and Instances</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-broker-errands' %>
+
+<a id="register-broker"></a><h4>Register Broker</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-register-broker' %>
+
+<a id="deregister-broker"></a><h4>Deregister Broker</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-deregister-broker' %>
+
+<a id="upgrade-all"></a><h4>Upgrade All Service Instances</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-upgrade-all' %>
+
+<a id="delete-all"></a><h4>Delete All Service Instances</h4>
+
+<%= partial '../../mysql/odb/tshoot-tech-delete-all' %>
+
+<a id="detect-orphans"></a><h3>Detect Orphaned Instances Service Instances</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-detect-orphans' %>
+
+<a id="instance-creds"></a><h3>Retrieve Admin and Read-Only Admin Credentials for a Service Instance</h3>
+ 
+To retrieve the admin and read-only admin credentials for a service instance from BOSH CredHub, perform the following steps:
+
+<ol>
+<li>Use the cf CLI to determine the GUID associated with the service instance for which you want to retrieve credentials. 
+    Run the following command:
+    <pre><code>cf service SERVICE-INSTANCE --guid</code></pre>
+    <br>
+    Where <code>SERVICE-INSTANCE</code> is the name of the service instance.
+    <br><Br>
+    For example:
+    <pre class="terminal">$ cf service my-service-instance --guid
+    12345678-90ab-cdef-1234-567890abcdef</pre>
+    If you do not know the name of the service instance, you can list service instances in the space with <code>cf services</code>.
+</li>
+<li>Perform the steps in <a href="https://docs.pivotal.io/pivotalcf/customizing/trouble-advanced.html#gather">Gather Credential and IP Address Information</a> and <a href="https://docs.pivotal.io/pivotalcf/customizing/trouble-advanced.html#ssh">SSH into Ops Manager</a> of <em>Advanced Troubleshooting with the BOSH CLI to SSH into the Ops Manager VM</em>.</li>
+<li>From the Ops Manager VM, log in to your BOSH Director with the BOSH CLI. See <a href="https://docs.pivotal.io/pivotalcf/customizing/trouble-advanced.html#log-in">Log in to the BOSH Director</a> in <em>Advanced Troubleshooting with the BOSH CLI</em>.</li>
+<li> If you have not yet created a UAA client for BOSH CredHub on your UAA server, perform the steps in <a href="prepare-tls.html#uaa">Create UAA Client</a>.</li>
+<li> If you are using PCF v1.12, perform the steps in <a href="prepare-tls.html#credhub-cli">Download the CredHub CLI (PCF v1.12 Only)</a> to download the CredHub CLI on the Ops Manager VM.</li>
+<li>Set the API target of the CredHub CLI to your BOSH CredHub server.
+    <br><br>
+    Run the following command:
+    <pre><code>credhub api https://BOSH-DIRECTOR:8844 --ca-cert=/var/tempest/workspaces/default/root_ca_certificate</code></pre>
+    <br>
+    Where <code>BOSH-DIRECTOR</code> is the IP address of the BOSH Director VM. 
+    <br><br>
+    For example:
+    <pre class="terminal">$ credhub api http<span>s:</span>//10.0.0.5:8844 --ca-cert=/var/tempest/workspaces/default/root_ca_certificate</pre>
+</li>
+<li> Log in to BOSH CredHub.
+    <br><br>
+    Run the following command:
+    <pre><code>credhub login --client-name=credhub --client-secret=CLIENT-SECRET</code></pre>
+    <br>
+    Where <code>CLIENT-SECRET</code> is the client secret you set in step 9 of <a href="prepare-tls.html#uaa">Create UAA Client</a>.
+    <br><br>
+    For example:
+    <pre class="terminal">$ credhub login \
+        --client-name=credhub \
+        --client-secret=abcdefghijklm123456789</pre>
+</li>
+<li> Use the CredHub CLI to retrieve the credentials. 
+    <ul><li> To retrieve the password for the admin user, run the following command:
+        <pre><code>credhub get -n /p-bosh/service-instance_GUID/admin_password</code></pre> 
+        In the output, the password appears under <code>value</code>.</li> 
+        <br>
+    <li> To retrieve the password for the read-only admin user, run the following command:
+        <pre><code>credhub get -n /p-bosh/service-instance_GUID/read_only_admin_password</pre></code>
+        In the output, the password appears under <code>value</code>.</li></ul>
+    <br>
+    For example:
+    <pre class="terminal">$ credhub get -n /p-bosh/service-instance_70d30bb6-7f30-441a-a87c-05a5e4afff26/admin_password
+    id: d6e5bd10-3b60-4a1a-9e01-c76da688b847
+    name: /p-bosh/service-instance_70d30bb6-7f30-441a-a87c-05a5e4afff26/admin_password
+    type: password
+    value: UMF2DXsqNPPlCNWMdVMcNv7RC3Wi10
+    version_created_at: 2018-04-02T23:16:09Z</pre>
+
+<a id="reinstall"></a><h3>Reinstall a Tile</h3>
+
+To reinstall the MySQL for PCF v2.x tile, see the <a href="https://discuss.pivotal.io/hc/en-us/articles/360003453534">Reinstalling MySQL for Pivotal Cloud Foundry version 2 and above</a> Knowledge Base article.
+
+<a id="view-resources"></a><h3>View Resource Saturation and Scaling</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-view-resources' %>
+
+<a id="id-instance-owner"></a><h3>Identify Service Instance Owner</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-id-instance-owner' %>
+
+<a id="monitor-quota"></a><h3>Monitor Quota Saturation and Service Instance Count</h3>
+
+<%= partial '../../mysql/odb/tshoot-tech-monitor-quota' %>
+
+<a id="kb"></a><h2>Knowledge Base (Community)</h2>
+
+<%= partial '../../mysql/odb/tshoot-kb' %>
+
+<a id="support"></a><h2>File a Support Ticket</h2>
+
+<%= partial '../../mysql/odb/tshoot-support' %>
